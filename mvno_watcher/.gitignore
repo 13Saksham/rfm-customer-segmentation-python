@@ -1,0 +1,4 @@
+# Local state: append-only history, never committed.
+data/*.sqlite3
+__pycache__/
+*.pyc

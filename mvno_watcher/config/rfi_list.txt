@@ -1,0 +1,11 @@
+# The 26 companies already on the RFI list.
+#
+# One company name per line. Blank lines and #-comments are ignored.
+# Matching is case-insensitive and substring-based in both directions, so
+# "Zuma Resources" matches "Zuma Resources Limited".
+#
+# THIS FILE IS CURRENTLY EMPTY ON PURPOSE.
+# The watcher does not invent the list. Until it is populated, every hit is
+# recorded with already_on_RFI_list = "unknown" and each run prints a
+# warning - the cross-check is reported as unavailable rather than silently
+# answered "no".
