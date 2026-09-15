@@ -11,7 +11,11 @@ from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import urljoin
 
-from .base import Item, Source, SourceDown, fetch, parse_date, within_window
+from ..config import ALL_KEYWORDS
+from .base import (
+    Item, PdfUnreadable, Source, SourceDown, fetch, fetch_pdf_text,
+    parse_date, within_window,
+)
 
 ANNOUNCEMENT_URLS = [
     "https://dps.psx.com.pk/announcements/companies",
@@ -19,6 +23,18 @@ ANNOUNCEMENT_URLS = [
 ]
 
 _DOC_RE = re.compile(r"/download/document/\d+\.pdf", re.I)
+
+# The announcements page lists hundreds of disclosures a day and the body of
+# each lives in a PDF. Fetching every one would be wasteful and rude, so the
+# row text is pre-filtered on keywords and only promising rows are opened.
+_PREFILTER = [k.lower() for k in ALL_KEYWORDS] + [
+    "telecom", "telecommunication", "connectivity", "mobile",
+]
+
+
+def _looks_relevant(text: str) -> bool:
+    low = (text or "").lower()
+    return any(term in low for term in _PREFILTER)
 
 
 class _RowParser(HTMLParser):
@@ -106,12 +122,21 @@ class PSXSource(Source):
                 if not within_window(published, since):
                     continue
 
+                body, extra = text, {"format": "pdf", "body_is_row_text": True}
+                if _looks_relevant(text):
+                    # A material-information PDF is the primary record; the
+                    # listing row is only an index entry.
+                    try:
+                        body = fetch_pdf_text(link)
+                        extra = {"format": "pdf", "body_is_row_text": False}
+                    except (PdfUnreadable, SourceDown) as exc:
+                        failures.append(f"PDF unreadable: {exc}")
+
                 items.append(Item(
                     title=cells[0] if cells else "PSX disclosure",
-                    url=link, body=text,
+                    url=link, body=body,
                     source_name=self.name, source_type=self.source_type,
-                    published_date=published,
-                    extra={"format": "pdf", "body_is_row_text": True},
+                    published_date=published, extra=extra,
                 ))
 
         if failures and reached:

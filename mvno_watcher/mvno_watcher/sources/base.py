@@ -6,6 +6,7 @@ keeps the watcher deployable anywhere without a build step.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 from dataclasses import dataclass, field
@@ -19,9 +20,23 @@ from xml.etree import ElementTree
 
 from ..transport import USER_AGENT, TransportError, get_chain
 
+try:
+    import pypdf
+except Exception:  # pragma: no cover
+    pypdf = None
+
 
 class SourceDown(Exception):
     """A source could not be read. Never swallowed: it becomes an alert."""
+
+
+class PdfUnreadable(Exception):
+    """A PDF was fetched but its text could not be extracted.
+
+    Not fatal, but never silent: PTA publishes licensee registers and PSX
+    publishes material-information disclosures as PDFs, so an unreadable PDF
+    is a real coverage gap and is reported as a source warning.
+    """
 
 
 @dataclass
@@ -55,6 +70,36 @@ def fetch(url: str, timeout: int = 30, retries: int = 3) -> str:
         from ..transport import FixtureTransport
         FixtureTransport(os.environ["MVNO_SAVE_FIXTURES"]).save(url, body)
     return body
+
+
+def fetch_pdf_text(url: str, timeout: int = 45) -> str:
+    """Fetch a PDF and return its text.
+
+    This matters more than it looks: the PTA publishes its licensee registers
+    as PDFs and the PSX serves disclosures the same way, so the single most
+    valuable document this watcher can read is a PDF.
+    """
+    if pypdf is None:
+        raise PdfUnreadable("pypdf is not installed; cannot read PDF bodies")
+    try:
+        data = get_chain().get_bytes(url, timeout=timeout)
+    except TransportError as exc:
+        raise SourceDown(str(exc)) from exc
+
+    if os.environ.get("MVNO_SAVE_FIXTURES"):
+        from ..transport import FixtureTransport
+        FixtureTransport(os.environ["MVNO_SAVE_FIXTURES"]).save_bytes(url, data)
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except Exception as exc:
+        raise PdfUnreadable(f"{url}: {type(exc).__name__}: {exc}") from exc
+
+    text = "\n".join(pages).strip()
+    if not text:
+        raise PdfUnreadable(f"{url}: no extractable text (likely a scan)")
+    return text
 
 
 # --- HTML ----------------------------------------------------------------

@@ -69,6 +69,10 @@ class Transport:
     def get(self, url: str, timeout: int = 30) -> str:
         raise NotImplementedError
 
+    def get_bytes(self, url: str, timeout: int = 30) -> bytes:
+        """Raw bytes, for PDFs. Text decoding would corrupt them."""
+        raise NotImplementedError
+
 
 class DirectTransport(Transport):
     name = "direct"
@@ -107,6 +111,26 @@ class DirectTransport(Transport):
                 time.sleep(2 ** (attempt + 1))
         raise last or TransportError(self.name, "unknown failure")
 
+    def get_bytes(self, url: str, timeout: int = 30) -> bytes:
+        if requests is None:  # pragma: no cover
+            raise TransportError(self.name, "the 'requests' package is not installed")
+        try:
+            resp = requests.get(
+                url, timeout=timeout, headers={"User-Agent": USER_AGENT}
+            )
+        except Exception as exc:
+            raise TransportError(self.name, f"{type(exc).__name__}: {exc}") from exc
+        if resp.status_code in POLICY_STATUSES:
+            raise TransportError(
+                self.name,
+                f"HTTP {resp.status_code} - egress policy denial for "
+                f"{urlparse(url).netloc}",
+                policy_denied=True,
+            )
+        if resp.status_code >= 400:
+            raise TransportError(self.name, f"HTTP {resp.status_code}")
+        return resp.content
+
 
 class FixtureTransport(Transport):
     """Replay saved responses from disk. Purely local; touches no network."""
@@ -139,6 +163,20 @@ class FixtureTransport(Transport):
             raise TransportError(self.name, f"no fixture saved for {url}")
         return path.read_text(encoding="utf-8")
 
+    def get_bytes(self, url: str, timeout: int = 30) -> bytes:
+        path = self.path_for(url)
+        if not path.exists():
+            raise TransportError(self.name, f"no fixture saved for {url}")
+        return path.read_bytes()
+
+    def save_bytes(self, url: str, body: bytes) -> Path:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.path_for(url)
+        path.write_bytes(body)
+        with (self.directory / "index.txt").open("a", encoding="utf-8") as fh:
+            fh.write(f"{self.key_for(url)}\t{url}\n")
+        return path
+
 
 BACKENDS: dict[str, Callable[[], Transport]] = {
     "direct": DirectTransport,
@@ -168,6 +206,27 @@ class Chain:
     @property
     def names(self) -> list[str]:
         return [t.name for t in self.transports]
+
+    def get_bytes(self, url: str, timeout: int = 30) -> bytes:
+        errors: list[str] = []
+        for transport in self.transports:
+            try:
+                body = transport.get_bytes(url, timeout=timeout)
+            except (TransportError, NotImplementedError) as exc:
+                errors.append(f"{transport.name}: {exc}")
+                continue
+            except Exception as exc:
+                errors.append(f"{transport.name}: {type(exc).__name__}: {exc}")
+                continue
+            if body:
+                self.last_route = transport.name
+                return body
+            errors.append(f"{transport.name}: empty response")
+        raise TransportError(
+            "chain",
+            f"{url} unreachable via [{', '.join(self.names)}] :: "
+            f"{' | '.join(errors)}",
+        )
 
     def get(self, url: str, timeout: int = 30) -> str:
         errors: list[str] = []

@@ -9,11 +9,13 @@ than quietly reducing coverage.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Optional
 
+from ..entities import extract_all_entities
 from .base import (
-    Item, Source, SourceDown, extract_links, fetch, html_to_text,
-    parse_date, within_window,
+    Item, PdfUnreadable, Source, SourceDown, extract_links, fetch,
+    fetch_pdf_text, html_to_text, parse_date, within_window,
 )
 
 INDEX_URLS = [
@@ -26,10 +28,40 @@ INDEX_URLS = [
 
 # PTA article slugs carry their own publication date, e.g.
 # .../pta-opens-...-licensing-in-pakistan-1588693749-2026-06-28
-_ARTICLE_RE = re.compile(r"pta\.gov\.pk/(?:category|en)/", re.I)
+# /assets/media/ must be included: PTA serves its licensee registers and
+# policy documents from there as PDFs, and excluding that path silently drops
+# the most valuable documents on the site.
+_ARTICLE_RE = re.compile(r"pta\.gov\.pk/(?:category|en|assets/media)/", re.I)
 _DATED_SLUG = re.compile(r"20\d{2}-\d{2}-\d{2}\s*$")
 
 MAX_ARTICLES_PER_INDEX = 40
+
+# PTA publishes its licence registers as PDFs under a stable path, e.g.
+#   /assets/media/2025-01-03-List-of-CVAS-Licensees-02012025.pdf
+# An MVNO equivalent is the single highest-value document this watcher can
+# read: it names every licensee at once. Registers are always fetched and are
+# exempt from the date window, because a register is current state, not news.
+_REGISTER_RE = re.compile(r"List[-_\s]*of[-_\s]*.*Licensee", re.I)
+
+
+def _is_register(url: str, link_text: str) -> bool:
+    return bool(_REGISTER_RE.search(url) or _REGISTER_RE.search(link_text or ""))
+
+
+def _register_rows(text: str) -> list[tuple[str, str]]:
+    """Split a register into (entity, row text) pairs.
+
+    A register naming eight licensees must yield eight hits, not one:
+    collapsing it to a single entity would discard most of the answer.
+    """
+    rows: list[tuple[str, str]] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if len(line) < 4:
+            continue
+        for entity in extract_all_entities(line):
+            rows.append((entity, line))
+    return rows
 
 
 class PTASource(Source):
@@ -67,17 +99,54 @@ class PTASource(Source):
 
             for url, link_text in candidates[:MAX_ARTICLES_PER_INDEX]:
                 published = parse_date(url) or parse_date(link_text)
-                if not within_window(published, since):
+                if not within_window(published, since) and not _is_register(url, link_text):
                     continue
+                is_register = _is_register(url, link_text)
+                if is_register and not published:
+                    published = parse_date(url) or date.today().isoformat()
+
                 if url.lower().endswith(".pdf"):
-                    # A PDF link is still evidence: keep the link text as body
-                    # rather than guessing at contents we cannot parse.
+                    title = link_text or url.rsplit("/", 1)[-1]
+                    try:
+                        pdf_text = fetch_pdf_text(url)
+                    except (PdfUnreadable, SourceDown) as exc:
+                        # Never silent: an unreadable PDF is a coverage gap.
+                        self.last_warnings.append(f"PDF unreadable: {exc}")
+                        items.append(Item(
+                            title=title, url=url, body=link_text,
+                            source_name=self.name, source_type=self.source_type,
+                            published_date=published,
+                            extra={"format": "pdf", "body_is_link_text": True},
+                        ))
+                        continue
+
+                    if is_register:
+                        rows = _register_rows(pdf_text)
+                        for entity, row in rows:
+                            items.append(Item(
+                                title=title, url=url,
+                                # Row first: the licensee row is the evidence,
+                                # so it is what the verbatim excerpt should
+                                # quote. The header is appended for the licence
+                                # context the row itself may omit.
+                                body=f"{row} - from {title}",
+                                source_name=self.name,
+                                source_type=self.source_type,
+                                published_date=published,
+                                extra={"format": "pdf", "register": True,
+                                       "entity_hint": entity},
+                            ))
+                        if not rows:
+                            self.last_warnings.append(
+                                f"register named no companies: {url}"
+                            )
+                        continue
+
                     items.append(Item(
-                        title=link_text or url.rsplit("/", 1)[-1],
-                        url=url, body=link_text,
+                        title=title, url=url, body=pdf_text,
                         source_name=self.name, source_type=self.source_type,
-                        published_date=published,
-                        extra={"format": "pdf", "body_is_link_text": True},
+                        published_date=published or parse_date(pdf_text[:400]),
+                        extra={"format": "pdf"},
                     ))
                     continue
                 try:

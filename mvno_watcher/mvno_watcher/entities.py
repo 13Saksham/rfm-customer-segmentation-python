@@ -144,3 +144,37 @@ def on_rfi_list(entity: Optional[str], rfi: list[str]) -> str:
         if n and (n in e or e in n):
             return "yes"
     return "no"
+
+
+def extract_all_entities(
+    text: str,
+    known_names: Iterable[str] = (),
+) -> list[str]:
+    """Every distinct company named in the text, in order of appearance.
+
+    Used for register-style documents - a PTA licensee list names many
+    companies in one file, and collapsing that to a single entity would throw
+    away most of the answer. Still never infers: each name is one the document
+    actually wrote.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for name in find_known_names(text or "", known_names):
+        if _is_stoplisted(name):
+            continue
+        if _norm(name) not in seen:
+            seen.add(_norm(name))
+            found.append(name)
+
+    for match in _COMPANY_RE.finditer(text or ""):
+        candidate = _clean(match.group(1))
+        if _is_stoplisted(candidate) or _POSSESSIVE.search(candidate):
+            continue
+        if len(candidate.split()) < 2:
+            continue
+        if _norm(candidate) not in seen:
+            seen.add(_norm(candidate))
+            found.append(candidate)
+
+    return found

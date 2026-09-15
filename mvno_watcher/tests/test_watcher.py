@@ -344,9 +344,12 @@ class TestEndToEndOffline(unittest.TestCase):
         src = PTASource(index_urls=[
             "https://www.pta.gov.pk/en/media-center/press-releases"
         ])
-        report = pipeline.run(self.conn, [src], fire_alerts=False)
+        pipeline.run(self.conn, [src], fire_alerts=False)
+        # Scoped to the grant article: the same index also carries the
+        # licensee register, which legitimately produces its own hits.
         rows = self.conn.execute(
-            "SELECT * FROM hits WHERE tier='A'"
+            "SELECT * FROM hits WHERE tier='A' AND source_url LIKE ?",
+            ("%pta-grants-mvno-licence-to-acme-digital%",),
         ).fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["entity_name"], "Acme Digital (Pvt) Limited")
@@ -394,3 +397,92 @@ class TestEndToEndOffline(unittest.TestCase):
         pipeline.run(self.conn, [src], fire_alerts=False)
         self.assertTrue(src.last_warnings,
                         "a partially-read source must report reduced coverage")
+
+
+class TestLicenseeRegister(unittest.TestCase):
+    """A PTA licensee register must yield one named hit per licensee.
+
+    This is the document that actually answers "who has a licence", and PTA
+    publishes it as a PDF under /assets/media/. Collapsing it to a single
+    entity, or excluding that path from the crawl, would discard the answer -
+    both were real bugs caught here.
+    """
+
+    FIXTURES = Path(__file__).resolve().parent / "fixtures"
+    REGISTER_URL = ("https://www.pta.gov.pk/assets/media/"
+                    "2026-09-01-List-of-MVNO-Licensees-01092026.pdf")
+
+    @classmethod
+    def setUpClass(cls):
+        if not (cls.FIXTURES / "index.txt").exists():
+            raise unittest.SkipTest("fixtures not generated")
+
+    def setUp(self):
+        from mvno_watcher.transport import Chain, FixtureTransport, set_chain
+        set_chain(Chain([FixtureTransport(str(self.FIXTURES))]))
+        self.conn = db.connect(":memory:")
+
+    def tearDown(self):
+        from mvno_watcher.transport import set_chain
+        set_chain(None)
+
+    def _run(self):
+        from mvno_watcher.sources.pta import PTASource
+        src = PTASource(index_urls=[
+            "https://www.pta.gov.pk/en/media-center/press-releases"
+        ])
+        pipeline.run(self.conn, [src], fire_alerts=False)
+        return src
+
+    def test_pdf_text_is_extracted(self):
+        from mvno_watcher.sources.base import fetch_pdf_text
+        text = fetch_pdf_text(self.REGISTER_URL)
+        self.assertIn("Acme Digital (Pvt) Limited", text)
+        self.assertIn("List of MVNO Licensees", text)
+
+    def test_every_licensee_becomes_its_own_hit(self):
+        self._run()
+        rows = self.conn.execute(
+            "SELECT entity_name FROM hits WHERE source_url = ? ORDER BY entity_name",
+            (self.REGISTER_URL,),
+        ).fetchall()
+        self.assertEqual(
+            [r["entity_name"] for r in rows],
+            ["Acme Digital (Pvt) Limited", "Orion Connect Services Limited",
+             "Zuma Resources Limited"],
+        )
+
+    def test_register_rows_are_tier_a(self):
+        self._run()
+        rows = self.conn.execute(
+            "SELECT tier FROM hits WHERE source_url = ?", (self.REGISTER_URL,)
+        ).fetchall()
+        self.assertTrue(rows)
+        self.assertTrue(all(r["tier"] == "A" for r in rows))
+
+    def test_excerpt_quotes_the_licensee_row(self):
+        self._run()
+        row = self.conn.execute(
+            "SELECT verbatim_excerpt FROM hits WHERE source_url = ? "
+            "AND entity_name = ?",
+            (self.REGISTER_URL, "Orion Connect Services Limited"),
+        ).fetchone()
+        self.assertIn("Orion Connect Services Limited", row["verbatim_excerpt"])
+
+    def test_assets_media_pdfs_are_crawled(self):
+        """Regression: /assets/media/ was excluded by the link filter."""
+        from mvno_watcher.sources.pta import _ARTICLE_RE
+        self.assertTrue(_ARTICLE_RE.search(self.REGISTER_URL))
+
+    def test_register_is_exempt_from_the_date_window(self):
+        """A register is current state, not news: a since-filter must not drop it."""
+        from mvno_watcher.sources.pta import PTASource
+        src = PTASource(index_urls=[
+            "https://www.pta.gov.pk/en/media-center/press-releases"
+        ])
+        pipeline.run(self.conn, [src], since="2030-01-01", fire_alerts=False)
+        rows = self.conn.execute(
+            "SELECT COUNT(*) c FROM hits WHERE source_url = ?",
+            (self.REGISTER_URL,),
+        ).fetchone()
+        self.assertEqual(rows["c"], 3)

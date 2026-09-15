@@ -217,23 +217,42 @@ python -m mvno_watcher ingest data/backfill_seed.json --provenance search_summar
    until the file is populated every hit records
    `already_on_RFI_list = "unknown"` and each run prints a warning. One name
    per line enables the cross-check.
-3. **PDF bodies are not parsed.** PTA and PSX serve much of their material as
-   PDFs. A PDF link is kept as evidence with its link text as the body, but
-   its contents are not read, so a hit can be missed where the trigger
-   sentence exists only inside the PDF.
+3. **Scanned PDFs are not read.** PDF text is extracted with `pypdf`, so
+   text-based PTA registers and PSX disclosures are parsed. An image-only
+   scan yields no text; that is reported as a source warning
+   (`PDF unreadable`), never silently skipped. There is no OCR.
 4. **Provisional excerpts.** Records ingested with
    `excerpt_provenance = search_summary` are not verified verbatim sentences.
+
+## The licensee register
+
+The document that actually answers *"who holds an MVNO licence"* is a PTA
+register, published as a PDF under `/assets/media/`, e.g.
+`.../2025-01-03-List-of-CVAS-Licensees-02012025.pdf`. The watcher treats these
+specially:
+
+- any link matching `List-of-…-Licensee` is recognised as a register;
+- it is **always fetched and is exempt from the date window** — a register is
+  current state, not news;
+- its PDF text is extracted and **exploded row by row**, so a register naming
+  eight licensees produces eight named Tier A hits rather than one.
+
+Two bugs were caught here and are regression-tested: `/assets/media/` was
+excluded by the crawler's link filter, which silently dropped every PTA PDF
+including registers and the policy framework; and register rows collapsed to
+a single entity, discarding most of the answer.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests   # 43 tests
+python -m unittest discover -s tests   # 49 tests
 ```
 
 Covers the hard gates, tier assignment, Urdu keyword matching, entity
 false-positives and attribution, dedupe, re-alert suppression, fail-loudly
 behaviour, and a full offline scrape→parse→match→gate→persist run against
-fixtures shaped like the live pages.
+fixtures shaped like the live pages, including PDF extraction and
+row-by-row parsing of a licensee register.
 
 ## Out of scope
 
