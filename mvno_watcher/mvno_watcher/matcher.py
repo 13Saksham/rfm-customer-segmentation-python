@@ -10,9 +10,11 @@ from .config import (
     ALL_KEYWORDS,
     LEADERSHIP_TERMS,
     LICENCE_TERMS,
+    MOBILE_CONTEXT_TERMS,
     MVNO_TERMS,
     REGISTRATION_TERMS,
     WEAK_KEYWORDS,
+    WHOLESALE_GENERIC_TERMS,
     WHOLESALE_TERMS,
 )
 from .entities import detect_enablers, detect_host_operators, extract_entity
@@ -26,7 +28,12 @@ def _kw_pattern(kw: str) -> re.Pattern:
     return re.compile(re.escape(kw))
 
 
+#: Recorded in matched_keywords when a host-operator deal was the reason
+#: the item was admitted rather than any keyword.
+_HOST_DEAL_KEYWORD = "host-operator agreement"
+
 _KEYWORD_PATTERNS = [(kw, _kw_pattern(kw)) for kw in ALL_KEYWORDS]
+_REAL_KEYWORDS = {kw for kw, _ in _KEYWORD_PATTERNS}
 
 
 def match_keywords(text: str) -> list[str]:
@@ -49,7 +56,8 @@ def find_excerpt(text: str, keywords: list[str]) -> str:
     if not text:
         return ""
     sentences = re.split(r"(?<=[.!?۔])\s+", text)
-    strong = [k for k in keywords if k not in WEAK_KEYWORDS] or keywords
+    real = [k for k in keywords if k in _REAL_KEYWORDS]
+    strong = [k for k in real if k not in WEAK_KEYWORDS] or real
     for sentence in sentences:
         for kw in strong:
             if _kw_pattern(kw).search(sentence):
@@ -91,17 +99,33 @@ def classify(
     text = f"{title}\n{body}".strip()
 
     keywords = match_keywords(text)
-    if not keywords:
+    hosts = detect_host_operators(text)
+
+    # PTA requires a prospective MVNO to sign an agreement with at least one
+    # MNO *before* it may apply, so a host-operator deal is the earliest
+    # public trace of an entrant - earlier than any PTA filing. And a sentence
+    # like "Acme Digital Limited signed an agreement with Jazz to launch
+    # mobile services" contains none of the keyword list, so a host-operator
+    # deal needs its own admission route or the signal is lost before tiering.
+    host_deal = (
+        bool(hosts)
+        and _has_any(text, WHOLESALE_GENERIC_TERMS)
+        and _has_any(text, MOBILE_CONTEXT_TERMS)
+    )
+
+    if not keywords and not host_deal:
         return None
 
     # A match made only of weak keywords ("SIM", "licence") is noise. This is
     # the primary tightening lever if a backfill returns too many hits.
-    if all(k in WEAK_KEYWORDS for k in keywords):
+    if keywords and all(k in WEAK_KEYWORDS for k in keywords) and not host_deal:
         return None
+
+    if not keywords:
+        keywords = [_HOST_DEAL_KEYWORD]
 
     entity = extract_entity(text, known_names, fallback_names)
     enablers = detect_enablers(text)
-    hosts = detect_host_operators(text)
     # Prefer a sentence from the body; fall back to the title only if the
     # body yields nothing, so the excerpt stays a single real sentence.
     excerpt = find_excerpt(body, keywords) or find_excerpt(title, keywords)
@@ -117,8 +141,8 @@ def classify(
     if entity:
         if has_mvno and has_licence:
             tier, reason = "A", "A1 MVNO licence application/grant naming a company"
-        elif hosts and has_wholesale:
-            tier, reason = "A", "A2 host-operator wholesale agreement"
+        elif hosts and (has_wholesale or host_deal):
+            tier, reason = "A", "A2 host-operator agreement (precedes PTA filing)"
         elif source_type == "SECP" and has_mvno and has_registration:
             tier, reason = "A", "A3 SECP registration/object change naming MVNO"
         elif source_type == "PSX":

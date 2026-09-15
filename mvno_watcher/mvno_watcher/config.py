@@ -97,6 +97,30 @@ WHOLESALE_TERMS = [
     "تھوک معاہدہ",
 ]
 
+#: Generic deal language. On its own this is far too broad, so Tier A only
+#: accepts it alongside a named host operator AND mobile/MVNO context.
+WHOLESALE_GENERIC_TERMS = [
+    "agreement",
+    "memorandum of understanding",
+    "mou",
+    "partnership",
+    "tie-up",
+    "signed with",
+    "معاہدہ",
+]
+
+#: Mobile-service context that makes a generic agreement meaningful.
+MOBILE_CONTEXT_TERMS = [
+    "MVNO",
+    "virtual network",
+    "mobile service",
+    "mobile communication",
+    "eSIM",
+    "e-SIM",
+    "subscriber",
+    "ای سم",
+]
+
 REGISTRATION_TERMS = [
     "incorporat",       # incorporated / incorporation
     "registered",

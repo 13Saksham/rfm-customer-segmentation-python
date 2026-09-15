@@ -48,8 +48,13 @@ def load_rfi_list(path: Path | None = None) -> list[str]:
 _DESIGNATOR_ALT = "|".join(
     sorted((re.escape(d) for d in CORPORATE_DESIGNATORS), key=len, reverse=True)
 )
+# Intra-name separators are spaces and tabs only, never \s: \s matches
+# newlines, which let a name run across the title/body join and produced the
+# welded entity "Jazz Acme Digital Limited" from two different companies on
+# two different lines.
 _COMPANY_RE = re.compile(
-    r"\b((?:[A-Z][\w&.'-]*\s+){0,5}(?:[A-Z][\w&.'-]*)[\s,]+(?:" + _DESIGNATOR_ALT + r"))\b"
+    r"\b((?:[A-Z][\w&.'-]*[ \t]+){0,5}(?:[A-Z][\w&.'-]*)[ \t,]+(?:"
+    + _DESIGNATOR_ALT + r"))\b"
 )
 
 _TRAILING_JUNK = re.compile(r"[\s,;:.\-]+$")

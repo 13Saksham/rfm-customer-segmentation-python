@@ -9,7 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mvno_watcher import db, pipeline
-from mvno_watcher.entities import detect_enablers, extract_entity, on_rfi_list
+from mvno_watcher.entities import (
+    detect_enablers, extract_all_entities, extract_entity, on_rfi_list,
+)
 from mvno_watcher.matcher import classify, match_keywords
 from mvno_watcher.models import DiscardedHit, Hit
 from mvno_watcher.sources import Item, Source, SourceDown
@@ -486,3 +488,108 @@ class TestLicenseeRegister(unittest.TestCase):
             (self.REGISTER_URL,),
         ).fetchone()
         self.assertEqual(rows["c"], 3)
+
+
+class TestRegisterFilenameRecognition(unittest.TestCase):
+    """PTA register filenames observed live on pta.gov.pk.
+
+    The original pattern ("List of ... Licensee") matched only two of six real
+    shapes, so most registers would never have been fetched.
+    """
+
+    REGISTERS = [
+        "2025-01-03-List-of-CVAS-Licensees-02012025.pdf",
+        "2025-04-16-Updated-FLL-Licensees-List-for-Pakistan-As-on-14Apr25.pdf",
+        "fll_list_pak_09-02-2023.pdf",
+        "cvas_list_05112021.pdf",
+        "ldi_lic_list_14062022.pdf",
+        "sr7_ldi_lic_pak_22-02-2024.pdf",
+        "ldi-lic-ajkgb-190717.pdf",
+        "list-of-new-and-converted-cvas-licensees-updated-on-27-10-17.pdf",
+        "mvno_lic_list_010926.pdf",          # the shape we are waiting for
+    ]
+
+    NOT_REGISTERS = [
+        "annual_report_2020_15012021.pdf",
+        "cons_paper_iot_08102020.pdf",
+        "lic_template_annex-f_im_05082021.pdf",
+        "2026-01-06-Approved-MVNO-POLICY-FRAMEWORK_Dec-2025-PDF.pdf",
+    ]
+
+    def test_registers_are_recognised(self):
+        from mvno_watcher.sources.pta import _is_register
+        for name in self.REGISTERS:
+            with self.subTest(name=name):
+                self.assertTrue(_is_register(name, ""), name)
+
+    def test_non_registers_are_not(self):
+        from mvno_watcher.sources.pta import _is_register
+        for name in self.NOT_REGISTERS:
+            with self.subTest(name=name):
+                self.assertFalse(_is_register(name, ""), name)
+
+
+class TestHostOperatorAgreement(unittest.TestCase):
+    """PTA requires an MNO agreement BEFORE an MVNO may apply.
+
+    That makes a host-operator deal the earliest public trace of an entrant,
+    so Tier A must fire on it without the word "wholesale" appearing.
+    """
+
+    def test_plain_agreement_with_host_operator_is_tier_a(self):
+        m = classify(
+            "Acme Digital signs deal with Jazz",
+            "Acme Digital Limited has signed an agreement with Jazz to launch "
+            "mobile services under its own brand.",
+            "press",
+        )
+        self.assertEqual(m.tier, "A")
+        self.assertEqual(m.entity, "Acme Digital Limited")
+
+    def test_explicit_wholesale_still_tier_a(self):
+        m = classify(
+            "Wholesale deal",
+            "Orion Connect Services Limited concluded a wholesale agreement "
+            "with Ufone as host operator.",
+            "press",
+        )
+        self.assertEqual(m.tier, "A")
+
+    def test_unrelated_vendor_deal_with_operator_is_not_tier_a(self):
+        """A network-equipment deal is not an MVNO signal."""
+        m = classify(
+            "Jazz upgrades radio network",
+            "Jazz signed an agreement with Huawei to upgrade its radio "
+            "access equipment across Punjab.",
+            "press",
+        )
+        self.assertTrue(m is None or m.tier != "A",
+                        f"expected not Tier A, got {m}")
+
+
+class TestEntityLineBoundaries(unittest.TestCase):
+    """A company name must not be welded across a line break.
+
+    Regression: matching with \\s let the regex run from a name at the end of
+    the title into a name at the start of the body, yielding
+    "Jazz Acme Digital Limited" - two companies fused into one record.
+    """
+
+    def test_name_does_not_span_newline(self):
+        text = ("Acme Digital signs deal with Jazz\n"
+                "Acme Digital Limited has signed an agreement.")
+        self.assertEqual(extract_entity(text), "Acme Digital Limited")
+
+    def test_multiline_register_rows_stay_separate(self):
+        text = ("1 Alpha Networks Limited\n"
+                "2 Beta Communications (Pvt) Limited\n")
+        self.assertEqual(
+            extract_all_entities(text),
+            ["Alpha Networks Limited", "Beta Communications (Pvt) Limited"],
+        )
+
+    def test_comma_separated_suffix_still_works(self):
+        self.assertEqual(
+            extract_entity("Telna North America, Inc. provides access."),
+            "Telna North America, Inc",
+        )

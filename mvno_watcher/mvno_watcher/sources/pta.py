@@ -24,6 +24,14 @@ INDEX_URLS = [
     "https://www.pta.gov.pk/category/tenders",
     "https://www.pta.gov.pk/en/licensing",
     "https://www.pta.gov.pk/en/licensing/licensees",
+    # The licensing category page is where a new register gets linked.
+    "https://www.pta.gov.pk/category/licensing-721279833-2023-05-30",
+]
+
+#: Documents worth polling directly, whether or not an index links them.
+#: Extend this with a register URL the moment one is published.
+DIRECT_DOCUMENT_URLS = [
+    "https://pta.gov.pk/assets/media/2026-01-06-Approved-MVNO-POLICY-FRAMEWORK_Dec-2025-PDF.pdf",
 ]
 
 # PTA article slugs carry their own publication date, e.g.
@@ -41,7 +49,17 @@ MAX_ARTICLES_PER_INDEX = 40
 # An MVNO equivalent is the single highest-value document this watcher can
 # read: it names every licensee at once. Registers are always fetched and are
 # exempt from the date window, because a register is current state, not news.
-_REGISTER_RE = re.compile(r"List[-_\s]*of[-_\s]*.*Licensee", re.I)
+_REGISTER_RE = re.compile(
+    r"(?:"
+    r"licensees?"                  # ...-List-of-CVAS-Licensees-...
+    r"|lic[-_](?:list|pak|ajkgb)"  # ldi_lic_list_, sr7_ldi_lic_pak_, ldi-lic-ajkgb-
+       # Deliberately not a bare "lic": lic_template_annex-f.pdf is a licence
+       # template, not a register, and parsing it row-wise yields nothing.
+    r"|[-_]list[-_]"               # fll_list_pak_..., cvas_list_...
+    r"|list[-_]of"                 # list-of-new-and-converted-cvas-...
+    r")",
+    re.I,
+)
 
 
 def _is_register(url: str, link_text: str) -> bool:
@@ -69,8 +87,15 @@ class PTASource(Source):
     source_type = "PTA"
     cadence = "daily"
 
-    def __init__(self, index_urls: Optional[list[str]] = None) -> None:
+    def __init__(
+        self,
+        index_urls: Optional[list[str]] = None,
+        direct_documents: Optional[list[str]] = None,
+    ) -> None:
         self.index_urls = index_urls or INDEX_URLS
+        self.direct_documents = (
+            DIRECT_DOCUMENT_URLS if direct_documents is None else direct_documents
+        )
         self.last_warnings: list[str] = []
 
     def collect(self, since: Optional[str] = None) -> list[Item]:
@@ -79,6 +104,23 @@ class PTASource(Source):
         items: list[Item] = []
         failures: list[str] = []
         reached = 0
+
+        for doc_url in self.direct_documents:
+            if doc_url in seen:
+                continue
+            seen.add(doc_url)
+            try:
+                text = fetch_pdf_text(doc_url)
+            except (PdfUnreadable, SourceDown) as exc:
+                self.last_warnings.append(f"direct document unreadable: {exc}")
+                continue
+            reached += 1
+            items.append(Item(
+                title=doc_url.rsplit("/", 1)[-1], url=doc_url, body=text,
+                source_name=self.name, source_type=self.source_type,
+                published_date=parse_date(doc_url) or parse_date(text[:400]),
+                extra={"format": "pdf", "direct": True},
+            ))
 
         for index_url in self.index_urls:
             try:

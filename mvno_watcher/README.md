@@ -23,6 +23,11 @@ Two runs were completed:
 | `backfill` against live sources | **INCONCLUSIVE** — 0/18 endpoints reachable. Reported as `SOURCE DOWN` per source; the tool explicitly refuses to read this as "no signal". |
 | `ingest` of research-derived records | 8 hits — **Tier A 2, Tier B 2, Tier C 4**. Zuma Resources present as **Tier A**. |
 
+**No MVNO applicant or licensee has been named publicly** as of 15 Sep 2026.
+Applications opened 24 June 2026; PTA has announced no grants, publishes no
+applicant list, and no outlet has named an applicant. Zuma Resources is the
+only company on public record stating an intention to apply.
+
 The second run is provisional: its records carry
 `excerpt_provenance = search_summary`, meaning entity, URL and date are
 attributable but the excerpt is not yet a verified verbatim source sentence.
@@ -96,8 +101,22 @@ approved a backfill run made against reachable sources.**
 | Rule | Trigger |
 |---|---|
 | A1 | MVNO term + licence/application/grant term + a named company |
-| A2 | Host operator (Jazz/Ufone/Zong/Telenor/PTML/SCOM) + wholesale agreement + a named company |
+| A2 | Host operator (Jazz/Ufone/Zong/Telenor/PTML/SCOM) + an agreement + a named company |
 | A3 | SECP registration or object change naming MVNO / virtual network operator |
+
+**A2 is the earliest signal, not A1.** PTA requires a prospective MVNO to
+*"first sign an agreement with at least one Mobile Network Operator (MNO)
+before applying for the permission from PTA"*
+([Revised Framework for MVNO Services](https://www.pta.gov.pk/en/media-center/single-media/revised-framework-for-mvno-services-in-pakistan)).
+The host-operator deal therefore happens **before** any PTA filing exists, so
+a Jazz/Ufone/Zong/Telenor agreement is the first public trace of an entrant.
+
+Because of that, a host-operator deal is its own **admission route**,
+independent of the keyword list: *"Acme Digital Limited signed an agreement
+with Jazz to launch mobile services"* contains no listed keyword, yet is
+precisely the target signal. It requires a named host operator **and** deal
+language **and** mobile context, so a network-equipment deal between an
+operator and a vendor does not qualify.
 
 **Tier B — weekly digest**: eSIM or connectivity partnership by a named
 company; any PSX disclosure mentioning telecom/eSIM/SIM/roaming/connectivity;
@@ -227,8 +246,21 @@ python -m mvno_watcher ingest data/backfill_seed.json --provenance search_summar
 ## The licensee register
 
 The document that actually answers *"who holds an MVNO licence"* is a PTA
-register, published as a PDF under `/assets/media/`, e.g.
-`.../2025-01-03-List-of-CVAS-Licensees-02012025.pdf`. The watcher treats these
+register, published as a PDF under `/assets/media/`. PTA publishes these for
+every licence class — FLL, CVAS, LDI — under inconsistent filenames:
+
+```
+2025-01-03-List-of-CVAS-Licensees-02012025.pdf
+2025-04-16-Updated-FLL-Licensees-List-for-Pakistan-As-on-14Apr25.pdf
+fll_list_pak_09-02-2023.pdf
+cvas_list_05112021.pdf
+ldi_lic_list_14062022.pdf
+sr7_ldi_lic_pak_22-02-2024.pdf
+ldi-lic-ajkgb-190717.pdf
+```
+
+**No MVNO register exists yet** — its absence alongside these is itself
+evidence that no MVNO licence has been granted. The watcher treats registers
 specially:
 
 - any link matching `List-of-…-Licensee` is recognised as a register;
@@ -237,15 +269,16 @@ specially:
 - its PDF text is extracted and **exploded row by row**, so a register naming
   eight licensees produces eight named Tier A hits rather than one.
 
-Two bugs were caught here and are regression-tested: `/assets/media/` was
+Three bugs were caught here and are regression-tested: `/assets/media/` was
 excluded by the crawler's link filter, which silently dropped every PTA PDF
-including registers and the policy framework; and register rows collapsed to
-a single entity, discarding most of the answer.
+including registers and the policy framework; register rows collapsed to a
+single entity, discarding most of the answer; and the filename pattern
+recognised only two of the seven real register shapes above.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests   # 49 tests
+python -m unittest discover -s tests   # 57 tests
 ```
 
 Covers the hard gates, tier assignment, Urdu keyword matching, entity
